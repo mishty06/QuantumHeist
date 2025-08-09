@@ -123,23 +123,6 @@ npm run dev
 4. **Push** to branch (`git push origin feature/quantum-magic`)
 5. **Open** Pull Request
 
-### Development Guidelines
-- Maintain TypeScript type safety
-- Keep components focused and reusable  
-- Add tests for new features
-- Update documentation
-
----
-
-## 🗺 Roadmap
-
-- [ ] **Advanced Algorithms**: Shor's Algorithm, VQE
-- [ ] **Multiplayer Mode**: Cooperative heist missions
-- [ ] **Mobile Version**: Native iOS/Android apps
-- [ ] **Classroom Tools**: Teacher dashboard and progress tracking
-- [ ] **Achievement System**: Gamified learning progression
-
----
 
 **Ready to start your quantum heist?** 🚀⚛️
 
