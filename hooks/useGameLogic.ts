@@ -1,229 +1,207 @@
 
-import { useState, useCallback, useEffect } from 'react';
-import { GameState, Role, Level, Node, LogEntry, ToolId, NodeStatus } from '../types';
-import { LEVELS } from '../constants';
+
+
+
+import { useState, useCallback } from 'react';
+import { GameState, Role, Puzzle, Circuit, CircuitGate, GateType, SimulationResult, ActiveGateInfo } from '../types';
+import { HACKER_PUZZLES, ANALYST_PUZZLES, STRATEGIST_PUZZLES, GATES } from '../constants';
 import * as geminiService from '../services/geminiService';
 
-const isPrime = (num: number) => {
-    for(let i = 2, s = Math.sqrt(num); i <= s; i++)
-        if(num % i === 0) return false; 
-    return num > 1;
-}
+const getPuzzlesForRole = (role: Role): Puzzle[] => {
+    switch (role) {
+        case 'hacker':
+            return HACKER_PUZZLES;
+        case 'analyst':
+            return ANALYST_PUZZLES;
+        case 'strategist':
+            return STRATEGIST_PUZZLES;
+        default:
+            return HACKER_PUZZLES;
+    }
+};
 
 export const useGameLogic = () => {
+    console.log('useGameLogic hook is loading...');
     const [gameState, setGameState] = useState<GameState>('role-select');
     const [role, setRole] = useState<Role | null>(null);
-    const [currentLevelIndex, setCurrentLevelIndex] = useState(0);
-    const [level, setLevel] = useState<Level>(LEVELS[0]);
-    const [nodes, setNodes] = useState<Node[]>(LEVELS[0].network);
-    const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [activeTool, setActiveTool] = useState<ToolId>('info');
+    const [allPuzzles, setAllPuzzles] = useState<Puzzle[]>(HACKER_PUZZLES);
+    const [currentPuzzleIndex, setCurrentPuzzleIndex] = useState(0);
+    const [puzzle, setPuzzle] = useState<Puzzle>(HACKER_PUZZLES[0]);
+    const [circuit, setCircuit] = useState<Circuit>(HACKER_PUZZLES[0].initialCircuit);
+    const [activeGate, setActiveGate] = useState<ActiveGateInfo | null>(null);
+    const [strategyAllocation, setStrategyAllocation] = useState<Record<string, number>>({});
     const [isLoading, setIsLoading] = useState(false);
+    const [narrative, setNarrative] = useState('');
+    const [dialogue, setDialogue] = useState('');
+    const [results, setResults] = useState<Record<string, number> | null>(null);
     const [educationalContent, setEducationalContent] = useState({ title: '', text: '' });
-    const [inputPrompt, setInputPrompt] = useState<{
-        nodeId: string;
-        challenge: 'password' | 'factors';
-        message: string;
-        data: { correctAnswer: string };
-    } | null>(null);
+    const [inputPrompt, setInputPrompt] = useState<{ message: string } | null>(null); // Added for InputPrompt.tsx
 
-    const addLog = useCallback((text: string, type: LogEntry['type']) => {
-        const newLog = {
-            id: Date.now() + Math.random(),
-            text,
-            type,
-            timestamp: new Date().toLocaleTimeString()
-        };
-        setLogs(prev => [...prev, newLog].slice(-50));
-    }, []);
-
-    const startLevel = useCallback((levelIndex: number) => {
-        const newLevel = LEVELS[levelIndex];
-        if (!newLevel) {
+    const startPuzzle = useCallback((puzzleIndex: number, puzzleSet: Puzzle[]) => {
+        const newPuzzle = puzzleSet[puzzleIndex];
+        if (!newPuzzle) {
             setGameState('game-over');
-            addLog("Congratulations, you've completed all available scenarios!", 'success');
+            setDialogue("Congratulations, Agent! You have successfully navigated the quantum landscape and completed all available missions for this role.");
             return;
         }
-        setLevel(newLevel);
-        setNodes(newLevel.network);
-        setGameState('playing');
-        setActiveTool('info');
-        setLogs([]);
-        addLog(`Initializing Scenario: ${newLevel.name}`, 'system');
-        addLog(`Objective: ${newLevel.hackerObjective}`, 'info');
-    }, [addLog]);
+        setPuzzle(newPuzzle);
+        setCircuit(newPuzzle.initialCircuit);
+        setNarrative(`Objective: ${newPuzzle.objective}`);
+        setResults(null);
+        setActiveGate(null);
+
+        if (newPuzzle.puzzleType === 'strategy' && newPuzzle.strategy) {
+            const initialAllocation = newPuzzle.strategy.categories.reduce((acc, cat) => {
+                acc[cat.id] = 0;
+                return acc;
+            }, {} as Record<string, number>);
+            setStrategyAllocation(initialAllocation);
+        }
+
+        setGameState('puzzle');
+    }, []);
     
     const selectRole = (selectedRole: Role) => {
         setRole(selectedRole);
-        startLevel(0);
+        const newPuzzleSet = getPuzzlesForRole(selectedRole);
+        setAllPuzzles(newPuzzleSet);
+        setCurrentPuzzleIndex(0);
+        startPuzzle(0, newPuzzleSet);
     };
 
-    const advanceToNextLevel = () => {
-        const nextLevelIndex = currentLevelIndex + 1;
-        setCurrentLevelIndex(nextLevelIndex);
-        startLevel(nextLevelIndex);
+    const resetGame = () => {
+        setGameState('role-select');
+        setRole(null);
+        setCurrentPuzzleIndex(0);
     };
 
-    const updateNodeStatus = (nodeId: string, status: NodeStatus) => {
-        setNodes(prevNodes => prevNodes.map(n => n.id === nodeId ? { ...n, status } : n));
+    const advanceToNextPuzzle = () => {
+        const nextPuzzleIndex = currentPuzzleIndex + 1;
+        setCurrentPuzzleIndex(nextPuzzleIndex);
+        startPuzzle(nextPuzzleIndex, allPuzzles);
     };
 
-    const handleLevelCompletion = useCallback(async () => {
-        setIsLoading(true);
-        addLog(`Success! Objective complete.`, 'success');
-        const content = await geminiService.getEducationalText(level.educationalTopic.key);
-        setEducationalContent({ title: level.educationalTopic.title, text: content });
-        setGameState('level-complete');
-        setIsLoading(false);
-    }, [level, addLog]);
-    
-    useEffect(() => {
-        if (gameState === 'playing' && level.successCondition(nodes)) {
-            handleLevelCompletion();
+    const selectGate = (gateType: GateType | null) => {
+        if (!gateType) {
+            setActiveGate(null);
+            return;
         }
-    }, [nodes, level, gameState, handleLevelCompletion]);
-    
-    const resetNodeToDefault = (nodeId: string) => {
-        const node = nodes.find(n => n.id === nodeId);
-        if (node && node.status !== 'breached' && node.status !== 'probed') {
-           setTimeout(() => updateNodeStatus(nodeId, 'default'), 1000);
-        }
-    };
-
-    const useTool = async (toolId: ToolId, nodeId: string | null) => {
-        if (isLoading || !nodeId) return;
-
-        const targetNode = nodes.find(n => n.id === nodeId);
-        if (!targetNode) return;
-
-        setIsLoading(true);
-        addLog(`Executing [${toolId}] on [${targetNode.name}]...`, 'player');
-        updateNodeStatus(nodeId, 'target');
-
-        try {
-            switch (toolId) {
-                case 'info':
-                    updateNodeStatus(nodeId, 'probed');
-                    addLog(`Probing ${targetNode.name}...`, 'info');
-                    if (targetNode.data?.content) {
-                        addLog(`Retrieved data: ${targetNode.data.content}`, 'info');
-                    } else if (targetNode.vulnerability?.type === 'rsa') {
-                        addLog(`RSA encryption detected. Public modulus: ${targetNode.vulnerability.data.modulus}`, 'info');
-                    } else {
-                        addLog('No immediate vulnerabilities detected.', 'info');
-                    }
-                    setIsLoading(false);
-                    break;
-
-                case 'qrng_analyzer':
-                     if (targetNode.vulnerability?.type === 'password_sequence') {
-                        addLog('Analyzing QRNG stream from router...', 'gemini');
-                        const result = await geminiService.simulateQRNG(20, 50);
-                        if (result) {
-                            addLog(`QRNG sequence detected: ${result.numbers.join(', ')}`, 'info');
-                            const primePassword = result.numbers.filter(isPrime).slice(0, targetNode.vulnerability.data.primes_count).join('');
-                            addLog(`Hint from phone notification suggests a password based on prime numbers. The password is the first ${targetNode.vulnerability.data.primes_count} primes concatenated.`, 'system');
-                            setInputPrompt({
-                                nodeId,
-                                challenge: 'password',
-                                message: `The QRNG stream is exposed. Deduce the password to access ${targetNode.name}.`,
-                                data: { correctAnswer: primePassword }
-                            });
-                        } else {
-                            addLog('QRNG analysis failed. Quantum interference?', 'error');
-                            resetNodeToDefault(nodeId);
-                        }
-                    } else {
-                        addLog('Tool is not effective on this target.', 'error');
-                        resetNodeToDefault(nodeId);
-                    }
-                    setIsLoading(false);
-                    break;
-                
-                case 'shors_algorithm':
-                    if (targetNode.vulnerability?.type === 'rsa') {
-                        const modulus = targetNode.vulnerability.data.modulus;
-                        addLog(`Executing Shor's algorithm on modulus ${modulus}... This may take a moment.`, 'gemini');
-                        const result = await geminiService.simulateShor(modulus);
-                        if (result && result.factors.length > 0) {
-                            addLog(`Quantum analysis complete. Factors found: ${result.factors.join(', ')}.`, 'success');
-                            setInputPrompt({
-                                nodeId,
-                                challenge: 'factors',
-                                message: `Shor's algorithm succeeded. Enter the factors for ${modulus} separated by a comma (e.g., 13,17) to decrypt the vault.`,
-                                data: { correctAnswer: result.factors.sort((a,b) => a-b).join(',') }
-                            });
-                        } else {
-                            addLog('Factoring failed. The quantum state decohered.', 'error');
-                            resetNodeToDefault(nodeId);
-                        }
-                    } else {
-                         addLog('Target is not vulnerable to this attack.', 'error');
-                         resetNodeToDefault(nodeId);
-                    }
-                    setIsLoading(false);
-                    break;
-                default:
-                    addLog(`Tool [${toolId}] not implemented.`, 'error');
-                    setIsLoading(false);
-            }
-        } catch (e) {
-            console.error(e);
-            addLog('A critical error occurred.', 'error');
-            setIsLoading(false);
-            resetNodeToDefault(nodeId);
+        if (!activeGate || activeGate.type !== gateType || activeGate.controlQubit === undefined) {
+             setActiveGate({ type: gateType });
         }
     };
     
-    const submitInput = (value: string) => {
-        if (!inputPrompt) return;
-        const { nodeId, challenge, data } = inputPrompt;
-        let isCorrect = false;
+    const addGate = (qubit: number, step: number) => {
+        if (!activeGate || activeGate.type === 'DEL' || puzzle.puzzleType !== 'construct') return;
 
-        if (challenge === 'password') {
-            if (value === data.correctAnswer) {
-                isCorrect = true;
-            }
-        } else if (challenge === 'factors') {
-            const submittedFactors = value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)).sort((a,b) => a-b).join(',');
-            if (submittedFactors === data.correctAnswer) {
-                isCorrect = true;
-            }
-        }
+        const gateInfo = GATES.find(g => g.id === activeGate.type);
+        if (!gateInfo) return;
 
-        if (isCorrect) {
-            addLog(`Correct! Access granted to ${nodes.find(n => n.id === nodeId)?.name}.`, 'success');
-            updateNodeStatus(nodeId, 'breached');
+        const isOccupied = circuit.steps[step].some(g => g.qubit === qubit || g.controlQubit === qubit);
+        if (isOccupied) return;
+
+        const isPendingCNOT = activeGate.type === 'CX' && activeGate.controlQubit !== undefined;
+
+        if (isPendingCNOT) {
+            if (activeGate.controlQubit === qubit) return;
+            if (activeGate.controlStep !== step) {
+                setActiveGate(null);
+                return;
+            }
+            const newGate: CircuitGate = {
+                id: `g-${Date.now()}`, gate: gateInfo, qubit: qubit, controlQubit: activeGate.controlQubit,
+            };
+            setCircuit(prev => {
+                const newSteps = [...prev.steps];
+                newSteps[step] = [...newSteps[step], newGate];
+                return { ...prev, steps: newSteps };
+            });
+            setActiveGate(null);
         } else {
-            addLog('Incorrect input. Access denied.', 'error');
-            updateNodeStatus(nodeId, 'default');
+            if (activeGate.type === 'CX') {
+                setActiveGate({ type: 'CX', controlQubit: qubit, controlStep: step });
+            } else {
+                const newGate: CircuitGate = { id: `g-${Date.now()}`, gate: gateInfo, qubit: qubit };
+                setCircuit(prev => {
+                    const newSteps = [...prev.steps];
+                    newSteps[step] = [...newSteps[step], newGate];
+                    return { ...prev, steps: newSteps };
+                });
+                setActiveGate(null);
+            }
         }
-        setInputPrompt(null);
     };
 
-    const cancelInput = () => {
-        if (!inputPrompt) return;
-        const { nodeId } = inputPrompt;
-        addLog('Input cancelled.', 'system');
-        updateNodeStatus(nodeId, 'default');
-        setInputPrompt(null);
+    const removeGate = (gateId: string) => {
+        if (puzzle.puzzleType === 'analyze') return;
+        setCircuit(prev => ({ ...prev, steps: prev.steps.map(step => step.filter(g => g.id !== gateId)) }));
     };
 
+    const updateStrategyAllocation = (categoryId: string, value: number) => {
+        setStrategyAllocation(prev => {
+            const currentTotal = Object.values(prev).reduce((sum, v) => sum + v, 0);
+            const remaining = (puzzle.strategy?.totalPoints || 0) - (currentTotal - (prev[categoryId] || 0));
+            const newValue = Math.min(value, remaining);
+            return { ...prev, [categoryId]: newValue };
+        });
+    };
+    
+    const handleSuccess = async (resultData: any) => {
+        const eduText = await geminiService.getEducationalText(puzzle.educationalTopic.key);
+        setEducationalContent({ title: puzzle.educationalTopic.title, text: eduText });
+        const dynamicNarrative = await geminiService.getDynamicNarrative(puzzle.narrativePrompt, { success: true, counts: resultData });
+        setDialogue(dynamicNarrative);
+        setTimeout(() => setGameState('dialogue'), 500);
+    };
+
+    const handleFailure = async (resultData: any) => {
+        const dynamicNarrative = await geminiService.getDynamicNarrative(puzzle.narrativePrompt, { success: false, counts: resultData });
+        setNarrative(dynamicNarrative);
+    };
+
+    const runCircuit = async () => {
+        if (puzzle.puzzleType !== 'construct') return;
+        setIsLoading(true);
+        setNarrative('Simulating quantum circuit...');
+        const simulationCounts = await geminiService.executeQuantumCircuit(circuit);
+        if (!simulationCounts) {
+            setNarrative('Simulation failed. Quantum interference, perhaps? Check the console.');
+            setIsLoading(false);
+            return;
+        }
+        setResults(simulationCounts);
+        const isSuccess = puzzle.successCondition(simulationCounts, circuit);
+        if (isSuccess) { await handleSuccess(simulationCounts); } else { await handleFailure(simulationCounts); }
+        setIsLoading(false);
+    };
+
+    const submitAnalysis = async (selectedOption: string) => {
+        if (puzzle.puzzleType !== 'analyze' || !puzzle.analysis) return;
+        setIsLoading(true);
+        setNarrative('Submitting analysis...');
+        const isSuccess = selectedOption === puzzle.analysis.correct;
+        if (isSuccess) { await handleSuccess({}); } else { await handleFailure({}); }
+        setIsLoading(false);
+    };
+
+    const submitStrategy = async () => {
+        if (puzzle.puzzleType !== 'strategy') return;
+        setIsLoading(true);
+        setNarrative('Executing strategy...');
+        const isSuccess = puzzle.successCondition(strategyAllocation, circuit);
+        // Using a short delay to make the simulation feel more impactful
+        await new Promise(res => setTimeout(res, 1000));
+        if (isSuccess) { await handleSuccess(strategyAllocation); } else { await handleFailure(strategyAllocation); }
+        setIsLoading(false);
+    };
+
+    const submitInput = useCallback((value: string) => {
+        console.log('Input submitted, but this feature is not yet connected:', value);
+        setInputPrompt(null);
+    }, []);
+    
     return {
-        gameState,
-        role,
-        level,
-        nodes,
-        logs,
-        activeTool,
-        isLoading,
-        educationalContent,
-        inputPrompt,
-        selectRole,
-        useTool,
-        setActiveTool,
-        advanceToNextLevel,
-        submitInput,
-        cancelInput,
+        gameState, role, puzzle, circuit, activeGate, isLoading, narrative, dialogue, results, educationalContent, inputPrompt, strategyAllocation, currentPuzzleIndex,
+        selectRole, resetGame, advanceToNextPuzzle, addGate, removeGate, selectGate, runCircuit, submitAnalysis, submitStrategy, updateStrategyAllocation, submitInput,
     };
 };
